@@ -4,19 +4,21 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import io
 
-st.set_page_config(page_title="DMARC Bulk Splitter", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="DMARC Bulk Inspector", layout="wide", page_icon="🛡️")
 
-st.title("🛡️ Bulk DMARC Policy Analyzer & Splitter")
-st.markdown("Upload a file with domains to categorize them into **No DMARC** and **DMARC p=none**.")
+st.title("🛡️ DMARC Live Inspector & Splitter")
+st.caption("Domains-ah direct-ah copy-paste pannunga — automatic-ah 'No DMARC' and 'p=none' nu split aagidum.")
 
 # DNS Resolver setup
 resolver = dns.resolver.Resolver()
-resolver.timeout = 2.5
-resolver.lifetime = 2.5
+resolver.timeout = 2.0
+resolver.lifetime = 2.0
 resolver.nameservers = ['8.8.8.8', '1.1.1.1']
 
 def check_domain(domain):
     domain = domain.strip().lower()
+    # Clean protocols/paths if accidentally pasted
+    domain = domain.replace("https://", "").replace("http://", "").split("/")[0].strip()
     if not domain:
         return None
     
@@ -26,7 +28,6 @@ def check_domain(domain):
         for rdata in answers:
             txt_record = "".join([part.decode('utf-8') if isinstance(part, bytes) else str(part) for part in rdata.strings])
             if txt_record.startswith("v=DMARC1"):
-                # Tag extraction
                 tags = [tag.strip() for tag in txt_record.split(";")]
                 for tag in tags:
                     if tag.startswith("p="):
@@ -40,103 +41,115 @@ def check_domain(domain):
     except Exception:
         return {"domain": domain, "status": "No DMARC", "record": ""}
 
-# Sidebar settings
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    max_workers = st.slider("Concurrent Threads", min_value=10, max_value=60, value=30, step=5)
-    st.info("Tip: 30-40 threads is optimal for speed without getting DNS rate-limited.")
+# Mode selection: Bulk Paste vs Single Search
+mode = st.radio("Search Type Choose Pannunga:", ["Bulk Paste (Multiple Domains)", "Single Domain Quick Check"], horizontal=True)
 
-# File uploader (supports TXT and CSV)
-uploaded_file = st.file_uploader("Upload Domain List (TXT or CSV)", type=["txt", "csv"])
+if mode == "Single Domain Quick Check":
+    col_input, col_btn = st.columns([4, 1])
+    with col_input:
+        single_domain = st.text_input("Enter Domain Name:", placeholder="example.com")
+    with col_btn:
+        st.write("") # Alignment spacing
+        st.write("")
+        search_btn = st.button("Check Domain", type="primary", use_container_width=True)
 
-domains = []
-if uploaded_file is not None:
-    if uploaded_file.name.endswith(".txt"):
-        content = uploaded_file.read().decode("utf-8")
-        domains = [line.strip() for line in content.splitlines() if line.strip()]
-    elif uploaded_file.name.endswith(".csv"):
-        df_input = pd.read_csv(uploaded_file)
-        # Select first column or domain column
-        col_name = df_input.columns[0]
-        domains = df_input[col_name].dropna().astype(str).str.strip().tolist()
+    if search_btn and single_domain:
+        with st.spinner("Checking DNS..."):
+            res = check_domain(single_domain)
+            if res["status"] == "No DMARC":
+                st.error(f"❌ **{res['domain']}** has **No DMARC** record configured.")
+            elif res["status"] == "DMARC p=none":
+                st.warning(f"⚠️ **{res['domain']}** has policy: **p=none** (Monitoring only, vulnerable to spoofing)")
+                st.code(res["record"], language="text")
+            else:
+                st.success(f"✅ **{res['domain']}** is protected: **{res['status']}**")
+                st.code(res["record"], language="text")
 
-    st.write(f"Total domains loaded: **{len(domains)}**")
+else:
+    # Direct paste box for bulk
+    domains_text = st.text_area(
+        "Domains list paste pannunga (one domain per line):",
+        placeholder="example1.com\nexample2.org\nexample3.io",
+        height=220
+    )
 
-    if st.button("Start Bulk Scan", type="primary"):
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        results = []
-        total = len(domains)
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for idx, res in enumerate(executor.map(check_domain, domains)):
-                if res:
-                    results.append(res)
-                # Update progress
-                progress = (idx + 1) / total
-                progress_bar.progress(progress)
-                status_text.text(f"Processed {idx + 1} of {total} domains...")
+    col_btn, col_info = st.columns([2, 5])
+    with col_btn:
+        start_btn = st.button("🚀 Process Domains", type="primary", use_container_width=True)
 
-        status_text.success("Scan Completed!")
-        
-        # Convert results to DataFrame
-        df_results = pd.DataFrame(results)
+    if start_btn:
+        raw_list = domains_text.splitlines()
+        clean_domains = list(dict.fromkeys([d.strip() for d in raw_list if d.strip()]))
 
-        # Categorize
-        no_dmarc_df = df_results[df_results["status"] == "No DMARC"]
-        dmarc_none_df = df_results[df_results["status"] == "DMARC p=none"]
-        other_df = df_results[~df_results["status"].isin(["No DMARC", "DMARC p=none"])]
+        if not clean_domains:
+            st.warning("Dayavu senju domains paste pannitu click pannunga!")
+        else:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            results = []
+            total = len(clean_domains)
 
-        # Dashboard Metrics
-        st.divider()
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Processed", len(df_results))
-        col2.metric("No DMARC", len(no_dmarc_df))
-        col3.metric("DMARC p=none", len(dmarc_none_df))
-        col4.metric("Other (reject/quarantine)", len(other_df))
+            with ThreadPoolExecutor(max_workers=35) as executor:
+                for idx, res in enumerate(executor.map(check_domain, clean_domains)):
+                    if res:
+                        results.append(res)
+                    progress_bar.progress((idx + 1) / total)
+                    status_text.text(f"Scanning {idx + 1} of {total} domains...")
 
-        st.divider()
+            status_text.success("Scan Completed!")
+            df = pd.DataFrame(results)
 
-        # Tabs for downloading and viewing
-        tab1, tab2, tab3 = st.tabs(["❌ No DMARC", "⚠️ DMARC p=none", "📋 Full Results"])
+            no_dmarc_df = df[df["status"] == "No DMARC"]
+            dmarc_none_df = df[df["status"] == "DMARC p=none"]
+            protected_df = df[~df["status"].isin(["No DMARC", "DMARC p=none"])]
 
-        with tab1:
-            st.subheader(f"No DMARC Records ({len(no_dmarc_df)})")
-            st.dataframe(no_dmarc_df[["domain"]], use_container_width=True)
-            
-            # Download TXT button
-            no_dmarc_txt = "\n".join(no_dmarc_df["domain"].tolist())
-            st.download_button(
-                label="📥 Download No DMARC (TXT)",
-                data=no_dmarc_txt,
-                file_name="no_dmarc_domains.txt",
-                mime="text/plain"
-            )
+            # Metrics
+            st.divider()
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Searched", len(df))
+            m2.metric("No DMARC", len(no_dmarc_df))
+            m3.metric("p=none", len(dmarc_none_df))
+            m4.metric("Protected (reject/quarantine)", len(protected_df))
 
-        with tab2:
-            st.subheader(f"DMARC p=none Records ({len(dmarc_none_df)})")
-            st.dataframe(dmarc_none_df[["domain", "record"]], use_container_width=True)
-            
-            # Download TXT button
-            dmarc_none_txt = "\n".join(dmarc_none_df["domain"].tolist())
-            st.download_button(
-                label="📥 Download p=none (TXT)",
-                data=dmarc_none_txt,
-                file_name="dmarc_none_domains.txt",
-                mime="text/plain"
-            )
+            st.divider()
 
-        with tab3:
-            st.subheader("All Results")
-            st.dataframe(df_results, use_container_width=True)
-            
-            # CSV Download for full report
-            csv_buffer = io.StringIO()
-            df_results.to_csv(csv_buffer, index=False)
-            st.download_button(
-                label="📥 Download Full Report (CSV)",
-                data=csv_buffer.getvalue(),
-                file_name="all_dmarc_results.csv",
-                mime="text/csv"
-            )
+            # Split view
+            left_col, right_col = st.columns(2)
+
+            with left_col:
+                st.subheader(f"❌ No DMARC ({len(no_dmarc_df)})")
+                if not no_dmarc_df.empty:
+                    st.text_area(
+                        "Direct Copy No DMARC:",
+                        value="\n".join(no_dmarc_df["domain"].tolist()),
+                        height=200,
+                        key="no_dmarc_box"
+                    )
+                    st.download_button(
+                        "📥 Download List (.txt)",
+                        data="\n".join(no_dmarc_df["domain"].tolist()),
+                        file_name="no_dmarc.txt",
+                        mime="text/plain",
+                        key="dl_no_dmarc"
+                    )
+                else:
+                    st.info("No domains found without DMARC.")
+
+            with right_col:
+                st.subheader(f"⚠️ DMARC p=none ({len(dmarc_none_df)})")
+                if not dmarc_none_df.empty:
+                    st.text_area(
+                        "Direct Copy p=none:",
+                        value="\n".join(dmarc_none_df["domain"].tolist()),
+                        height=200,
+                        key="pnone_box"
+                    )
+                    st.download_button(
+                        "📥 Download List (.txt)",
+                        data="\n".join(dmarc_none_df["domain"].tolist()),
+                        file_name="dmarc_pnone.txt",
+                        mime="text/plain",
+                        key="dl_pnone"
+                    )
+                else:
+                    st.info("No domains found with p=none.")
