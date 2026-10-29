@@ -7,29 +7,40 @@ import re
 st.set_page_config(page_title="DMARC Live Inspector", layout="wide", page_icon="🛡️")
 
 st.title("🛡️ Accurate DMARC Policy Analyzer")
-st.caption("Robust DNS resolution & Regex pattern matching.")
+st.caption("Auto-cleans emails/names (e.g. fname@domain.com ➔ domain.com) & parses DMARC records accurately.")
 
-# Fallback resolvers setup
+# Setup DNS resolver with fallback
 def get_resolver():
     res = dns.resolver.Resolver()
-    res.timeout = 4.0
-    res.lifetime = 4.0
-    # Try public DNS; fallback to system resolver if restricted
-    res.nameservers = ['1.1.1.1', '8.8.8.8']
+    res.timeout = 3.0
+    res.lifetime = 3.0
+    res.nameservers = ['8.8.8.8', '1.1.1.1']
     return res
 
 resolver = get_resolver()
 
-def check_domain(domain):
-    domain = domain.strip().lower()
-    # Strip URL formatting
-    domain = re.sub(r"^https?://", "", domain).split("/")[0].strip()
-    # Strip www if needed, but keep core domain
-    if domain.startswith("www."):
-        domain = domain[4:]
+def extract_clean_domain(raw_text):
+    text = raw_text.strip().lower()
+    
+    # 1. @ irundha pinnaadi irukura domain-ah mattum edukka
+    if "@" in text:
+        text = text.split("@")[-1]
+    
+    # 2. http://, https://, www., paths remove panna
+    text = re.sub(r"^https?://", "", text)
+    text = text.split("/")[0].strip()
+    if text.startswith("www."):
+        text = text[4:]
+        
+    return text
 
+def check_domain(raw_input):
+    original_input = raw_input.strip()
+    domain = extract_clean_domain(original_input)
+
+    # Valid domain-ah nu check panna (at least one dot irukanum)
     if not domain or "." not in domain:
-        return None
+        return {"original": original_input, "domain": domain, "status": "Invalid Domain", "policy": "invalid", "record": "Invalid format"}
 
     dmarc_query = f"_dmarc.{domain}"
     raw_txt_records = []
@@ -37,113 +48,110 @@ def check_domain(domain):
     try:
         answers = resolver.resolve(dmarc_query, "TXT")
         for rdata in answers:
-            # Join multiple string segments if chunked
             record = "".join([s.decode('utf-8', errors='ignore') if isinstance(s, bytes) else str(s) for s in rdata.strings])
             raw_txt_records.append(record)
-    except dns.resolver.NXDOMAIN:
-        return {"domain": domain, "status": "No DMARC", "policy": "none_found", "record": "NXDOMAIN"}
-    except dns.resolver.NoAnswer:
-        return {"domain": domain, "status": "No DMARC", "policy": "none_found", "record": "No TXT Record"}
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return {"original": original_input, "domain": domain, "status": "No DMARC", "policy": "none_found", "record": "No DMARC record"}
     except (dns.resolver.Timeout, dns.resolver.NoNameservers):
-        # Fallback to default system DNS if 1.1.1.1 / 8.8.8.8 times out
+        # Fallback to system default DNS
         try:
             default_resolver = dns.resolver.Resolver()
-            default_resolver.timeout = 4.0
+            default_resolver.timeout = 3.0
             answers = default_resolver.resolve(dmarc_query, "TXT")
             for rdata in answers:
                 record = "".join([s.decode('utf-8', errors='ignore') if isinstance(s, bytes) else str(s) for s in rdata.strings])
                 raw_txt_records.append(record)
-        except Exception as e:
-            return {"domain": domain, "status": "DNS Error/Timeout", "policy": "error", "record": str(e)}
+        except Exception:
+            return {"original": original_input, "domain": domain, "status": "No DMARC", "policy": "none_found", "record": "DNS Timeout/Unreachable"}
     except Exception as e:
-        return {"domain": domain, "status": "No DMARC", "policy": "none_found", "record": str(e)}
+        return {"original": original_input, "domain": domain, "status": "No DMARC", "policy": "none_found", "record": str(e)}
 
-    # Scan records for DMARC tag
+    # DMARC tag verification
     for txt in raw_txt_records:
         cleaned_txt = txt.strip().strip('"').strip("'")
-        # Matches v=DMARC1 with flexible spacing/casing
         if re.search(r"\bv\s*=\s*DMARC1\b", cleaned_txt, re.IGNORECASE):
-            # Extract p= policy using regex
             match = re.search(r"\bp\s*=\s*([a-zA-Z]+)", cleaned_txt, re.IGNORECASE)
             if match:
                 policy = match.group(1).lower()
                 if policy == "none":
-                    return {"domain": domain, "status": "DMARC p=none", "policy": "none", "record": cleaned_txt}
+                    return {"original": original_input, "domain": domain, "status": "DMARC p=none", "policy": "none", "record": cleaned_txt}
                 else:
-                    return {"domain": domain, "status": f"DMARC p={policy}", "policy": policy, "record": cleaned_txt}
-            return {"domain": domain, "status": "DMARC (No Policy Specified)", "policy": "unspecified", "record": cleaned_txt}
+                    return {"original": original_input, "domain": domain, "status": f"DMARC p={policy}", "policy": policy, "record": cleaned_txt}
+            return {"original": original_input, "domain": domain, "status": "DMARC (No Policy)", "policy": "unspecified", "record": cleaned_txt}
 
-    return {"domain": domain, "status": "No DMARC", "policy": "none_found", "record": "; ".join(raw_txt_records) or "No DMARC record found"}
+    return {"original": original_input, "domain": domain, "status": "No DMARC", "policy": "none_found", "record": "; ".join(raw_txt_records)}
 
-# UI
+# UI Layout
 domains_text = st.text_area(
-    "Domains list paste pannunga (one per line):",
-    placeholder="google.com\nyahoo.com\nmicrosoft.com",
-    height=200
+    "List-ah inga paste pannunga (Emails or Domains):",
+    placeholder="john@example.com\nadmin@yahoo.com\ngitlab.com\nsmith@google.com",
+    height=220
 )
 
 col_run, col_threads = st.columns([2, 2])
 with col_threads:
-    threads = st.slider("Threads (koraicha accuracy koodum):", min_value=5, max_value=30, value=15)
+    threads = st.slider("Scan Speed (Threads):", min_value=5, max_value=40, value=20)
 with col_run:
     st.write("")
     st.write("")
-    start_btn = st.button("🚀 Analyze & Split", type="primary", use_container_width=True)
+    start_btn = st.button("🚀 Clean & Analyze DMARC", type="primary", use_container_width=True)
 
 if start_btn:
-    raw_list = domains_text.splitlines()
-    clean_domains = list(dict.fromkeys([d.strip() for d in raw_list if d.strip()]))
+    raw_lines = [line.strip() for line in domains_text.splitlines() if line.strip()]
 
-    if not clean_domains:
-        st.warning("Domains ethuvum paste pannala!")
+    if not raw_lines:
+        st.warning("List ethuvum paste pannala!")
     else:
         progress_bar = st.progress(0)
         status_box = st.empty()
         results = []
-        total = len(clean_domains)
+        total = len(raw_lines)
 
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            for idx, res in enumerate(executor.map(check_domain, clean_domains)):
+            for idx, res in enumerate(executor.map(check_domain, raw_lines)):
                 if res:
                     results.append(res)
                 progress_bar.progress((idx + 1) / total)
-                status_box.text(f"Scanning {idx + 1}/{total}: {clean_domains[idx]}")
+                status_box.text(f"Checking {idx + 1}/{total}: {res['domain']}")
 
         status_box.success("Scan Completed!")
         df = pd.DataFrame(results)
 
+        # Filters
         no_dmarc_df = df[df["status"] == "No DMARC"]
         dmarc_none_df = df[df["status"] == "DMARC p=none"]
         protected_df = df[df["policy"].isin(["quarantine", "reject"])]
-        errors_df = df[df["status"] == "DNS Error/Timeout"]
 
         st.divider()
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Tested", len(df))
+        c1.metric("Total Checked", len(df))
         c2.metric("❌ No DMARC", len(no_dmarc_df))
-        c3.metric("⚠️ p=none", len(dmarc_none_df))
-        c4.metric("🛡️ Protected / Errors", f"{len(protected_df)} / {len(errors_df)}")
+        c3.metric("⚠️ DMARC p=none", len(dmarc_none_df))
+        c4.metric("🛡️ Protected (reject/quarantine)", len(protected_df))
 
         st.divider()
 
-        tab1, tab2, tab3 = st.tabs(["⚠️ DMARC p=none", "❌ No DMARC", "🔍 Full Inspection Details"])
+        tab1, tab2, tab3 = st.tabs(["⚠️ DMARC p=none", "❌ No DMARC", "📋 Detailed Results"])
 
         with tab1:
-            st.subheader(f"DMARC p=none Domains ({len(dmarc_none_df)})")
+            st.subheader(f"DMARC p=none ({len(dmarc_none_df)})")
             if not dmarc_none_df.empty:
-                st.text_area("Direct Copy p=none:", value="\n".join(dmarc_none_df["domain"].tolist()), height=180)
-                st.download_button("📥 Download p=none (.txt)", data="\n".join(dmarc_none_df["domain"].tolist()), file_name="p_none.txt")
+                # Option to get cleaned domain or original input back
+                clean_list = "\n".join(dmarc_none_df["domain"].unique())
+                st.text_area("Cleaned Domains:", value=clean_list, height=180, key="pnone_clean")
+                st.download_button("📥 Download p=none Domains (.txt)", data=clean_list, file_name="p_none_domains.txt", key="dl_pnone")
             else:
-                st.info("Zero domains with p=none.")
+                st.info("No domains with p=none found.")
 
         with tab2:
-            st.subheader(f"No DMARC Domains ({len(no_dmarc_df)})")
+            st.subheader(f"No DMARC ({len(no_dmarc_df)})")
             if not no_dmarc_df.empty:
-                st.text_area("Direct Copy No DMARC:", value="\n".join(no_dmarc_df["domain"].tolist()), height=180)
-                st.download_button("📥 Download No DMARC (.txt)", data="\n".join(no_dmarc_df["domain"].tolist()), file_name="no_dmarc.txt")
+                clean_no_dmarc = "\n".join(no_dmarc_df["domain"].unique())
+                st.text_area("Cleaned Domains:", value=clean_no_dmarc, height=180, key="nodmarc_clean")
+                st.download_button("📥 Download No DMARC Domains (.txt)", data=clean_no_dmarc, file_name="no_dmarc_domains.txt", key="dl_nodmarc")
             else:
-                st.info("Zero domains without DMARC.")
+                st.info("No domains without DMARC found.")
 
         with tab3:
-            st.subheader("Inspection Table (Domain, Status & Actual Record)")
-            st.dataframe(df[["domain", "status", "record"]], use_container_width=True)
+            st.subheader("All Scanned Records")
+            st.dataframe(df[["original", "domain", "status", "record"]], use_container_width=True)
