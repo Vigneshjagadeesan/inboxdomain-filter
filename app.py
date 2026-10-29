@@ -6,8 +6,8 @@ import re
 
 st.set_page_config(page_title="DMARC Live Inspector", layout="wide", page_icon="🛡️")
 
-st.title("🛡️ Accurate DMARC Policy Analyzer & Deduplicator")
-st.caption("Filters DMARC behind the scenes, removes duplicates, and retains original fname format!")
+st.title("🛡️ Accurate DMARC Policy Analyzer")
+st.caption("Filters by domain behind the scenes, but returns your original email/fname format in the results!")
 
 def get_resolver():
     res = dns.resolver.Resolver()
@@ -120,24 +120,19 @@ def check_domain(raw_input):
         "record": "; ".join(raw_txt_records)
     }
 
-# Input Section
 input_text = st.text_area(
     "List-ah inga paste pannunga (fname@domain.com or domains):",
-    placeholder="john@example.com\njohn@example.com\nkarthi@testdomain.org\nsuresh@company.io",
-    height=200
+    placeholder="john@example.com\nkarthi@testdomain.org\nsuresh@company.io",
+    height=220
 )
 
-# Filtering & Configuration Controls
-col_opt1, col_opt2 = st.columns(2)
-with col_opt1:
-    dedup_mode = st.radio(
-        "Deduplication Filter Mode:",
-        ["Exact Match Mattum Remove Pannu (Same fname@domain)", "Domain-wise Unique (One fname per domain)"]
-    )
-with col_opt2:
+col_run, col_threads = st.columns([2, 2])
+with col_threads:
     threads = st.slider("Scan Speed (Threads):", min_value=5, max_value=40, value=25)
-
-start_btn = st.button("🚀 Process & Remove Duplicates", type="primary", use_container_width=True)
+with col_run:
+    st.write("")
+    st.write("")
+    start_btn = st.button("🚀 Process & Retain Original", type="primary", use_container_width=True)
 
 if start_btn:
     raw_lines = [line.strip() for line in input_text.splitlines() if line.strip()]
@@ -145,30 +140,20 @@ if start_btn:
     if not raw_lines:
         st.warning("List ethuvum paste pannala!")
     else:
-        # Pre-deduplication to save DNS queries
-        total_input_count = len(raw_lines)
-        unique_lines = list(dict.fromkeys(raw_lines))
-
         progress_bar = st.progress(0)
         status_box = st.empty()
         results = []
-        total_unique = len(unique_lines)
+        total = len(raw_lines)
 
         with ThreadPoolExecutor(max_workers=threads) as executor:
-            for idx, res in enumerate(executor.map(check_domain, unique_lines)):
+            for idx, res in enumerate(executor.map(check_domain, raw_lines)):
                 if res:
                     results.append(res)
-                progress_bar.progress((idx + 1) / total_unique)
-                status_box.text(f"Processed {idx + 1}/{total_unique}: {res['domain']}")
+                progress_bar.progress((idx + 1) / total)
+                status_box.text(f"Checked {idx + 1}/{total}: {res['domain']}")
 
-        status_box.success("Scan & Filtering Completed!")
+        status_box.success("Scan Completed!")
         df = pd.DataFrame(results)
-
-        # Apply domain-wise deduplication if selected
-        if dedup_mode == "Domain-wise Unique (One fname per domain)":
-            df = df.drop_duplicates(subset=["domain"], keep="first")
-        else:
-            df = df.drop_duplicates(subset=["original"], keep="first")
 
         no_dmarc_df = df[df["status"] == "No DMARC"]
         dmarc_none_df = df[df["status"] == "DMARC p=none"]
@@ -176,24 +161,24 @@ if start_btn:
 
         st.divider()
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Unique Cleaned", f"{len(df)} / {total_input_count}")
+        c1.metric("Total Items", len(df))
         c2.metric("❌ No DMARC", len(no_dmarc_df))
         c3.metric("⚠️ DMARC p=none", len(dmarc_none_df))
-        c4.metric("🛡️ Protected", len(protected_df))
+        c4.metric("🛡️ Protected (reject/quar)", len(protected_df))
 
         st.divider()
 
-        tab1, tab2, tab3 = st.tabs(["⚠️ DMARC p=none (Unique)", "❌ No DMARC (Unique)", "📋 All Unique Records"])
+        tab1, tab2, tab3 = st.tabs(["⚠️ DMARC p=none (Original format)", "❌ No DMARC (Original format)", "📋 Full Details"])
 
         with tab1:
-            st.subheader(f"Unique DMARC p=none ({len(dmarc_none_df)} items)")
+            st.subheader(f"DMARC p=none ({len(dmarc_none_df)} items)")
             if not dmarc_none_df.empty:
                 pnone_results = "\n".join(dmarc_none_df["original"].tolist())
-                st.text_area("Direct Copy (Unique fname@domain):", value=pnone_results, height=200, key="pnone_fname")
+                st.text_area("Direct Copy (With fname):", value=pnone_results, height=200, key="pnone_fname")
                 st.download_button(
-                    "📥 Download p=none Unique (.txt)",
+                    "📥 Download p=none (Original format)",
                     data=pnone_results,
-                    file_name="p_none_unique.txt",
+                    file_name="p_none_with_fname.txt",
                     mime="text/plain",
                     key="dl_pnone"
                 )
@@ -201,14 +186,14 @@ if start_btn:
                 st.info("Zero p=none records found.")
 
         with tab2:
-            st.subheader(f"Unique No DMARC ({len(no_dmarc_df)} items)")
+            st.subheader(f"No DMARC ({len(no_dmarc_df)} items)")
             if not no_dmarc_df.empty:
                 nodmarc_results = "\n".join(no_dmarc_df["original"].tolist())
-                st.text_area("Direct Copy (Unique fname@domain):", value=nodmarc_results, height=200, key="nodmarc_fname")
+                st.text_area("Direct Copy (With fname):", value=nodmarc_results, height=200, key="nodmarc_fname")
                 st.download_button(
-                    "📥 Download No DMARC Unique (.txt)",
+                    "📥 Download No DMARC (Original format)",
                     data=nodmarc_results,
-                    file_name="no_dmarc_unique.txt",
+                    file_name="no_dmarc_with_fname.txt",
                     mime="text/plain",
                     key="dl_nodmarc"
                 )
@@ -216,5 +201,5 @@ if start_btn:
                 st.info("Zero No DMARC records found.")
 
         with tab3:
-            st.subheader("Inspection Table")
+            st.subheader("All Scanned Rows")
             st.dataframe(df[["original", "domain", "status", "record"]], use_container_width=True)
