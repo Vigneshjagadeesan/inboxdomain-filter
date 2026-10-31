@@ -121,7 +121,7 @@ def check_domain(raw_input):
     }
 
 input_text = st.text_area(
-    "List-Domains (fname@domain.com or domains):",
+    " (fname@domain.com or domains):",
     placeholder="john@example.com\nkarthi@testdomain.org\nsuresh@company.io",
     height=220
 )
